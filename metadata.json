@@ -1,0 +1,6 @@
+{
+  "name": "Content Architect Pro",
+  "description": "Backend-focused blog automation agent that generates SEO-optimized, tabular data ready for normalized SQL database insertion.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
