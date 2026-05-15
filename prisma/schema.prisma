@@ -155,3 +155,287 @@ model SystemSetting {
   key   String @unique
   value String
 }
+
+// ═══════════════════════════════════════════════════════════════
+// YOUTUBE AUTOMATION PLATFORM
+// ═══════════════════════════════════════════════════════════════
+
+model YoutubeChannel {
+  id               String                  @id @default(cuid())
+  name             String
+  handle           String?
+  niche            String
+  subNiche         String?
+  description      String?
+  tone             String                  @default("cinematic")
+  style            String                  @default("metaphorical")
+  targetAudience   String?
+  brandVoice       String?
+  visualStyle      String?
+  colorPalette     String?
+  recurringMotifs  String?
+  publishFrequency String                  @default("WEEKLY")
+  preferredDuration Int                   @default(8)
+  ytChannelId      String?
+  ytAccessToken    String?
+  ytRefreshToken   String?
+  isActive         Boolean                 @default(true)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  projects         YoutubeProject[]
+  memories         YoutubeMemory[]
+  analytics        YoutubeAnalytics[]
+  automationTasks  YoutubeAutomationTask[]
+  ideas            YoutubeIdea[]
+
+  @@map("youtube_channels")
+}
+
+model YoutubeProject {
+  id               String              @id @default(cuid())
+  channelId        String
+  channel          YoutubeChannel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  title            String?
+  concept          String?
+  status           String              @default("IDEA")
+  priority         Int                 @default(5)
+  trendScore       Float?
+  viralityScore    Float?
+  competitionScore Float?
+  finalVideoUrl    String?
+  thumbnailUrl     String?
+  publishedAt      DateTime?
+  ytVideoId        String?
+  scheduledFor     DateTime?
+  errorMessage     String?
+  currentStage     String?
+  stageProgress    Int                 @default(0)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  script           YoutubeScript?
+  storyboard       YoutubeStoryboard?
+  scenes           YoutubeScene[]
+  assets           YoutubeAsset[]
+  seo              YoutubeSeo?
+  analytics        YoutubeAnalytics[]
+  agentLogs        YoutubeAgentLog[]
+
+  @@map("youtube_projects")
+}
+
+model YoutubeIdea {
+  id               String         @id @default(cuid())
+  channelId        String
+  channel          YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  title            String
+  concept          String
+  hook             String?
+  emotionalAngle   String?
+  targetEmotion    String?
+  metaphorSeed     String?
+  trendScore       Float          @default(0)
+  viralityScore    Float          @default(0)
+  competitionScore Float          @default(0)
+  opportunityScore Float          @default(0)
+  sourceSignals    String?
+  keywords         String?
+  status           String         @default("NEW")
+  createdAt        DateTime       @default(now())
+
+  @@map("youtube_ideas")
+}
+
+model YoutubeScript {
+  id               String         @id @default(cuid())
+  projectId        String         @unique
+  project          YoutubeProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hook             String
+  hookType         String?
+  fullScript       String
+  sections         String
+  wordCount        Int?
+  estimatedDuration Float?
+  emotionalArc     String?
+  tensionPoints    String?
+  retentionScore   Float?
+  emotionScore     Float?
+  originalityScore Float?
+  version          Int            @default(1)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@map("youtube_scripts")
+}
+
+model YoutubeStoryboard {
+  id              String         @id @default(cuid())
+  projectId       String         @unique
+  project         YoutubeProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  totalScenes     Int
+  totalDuration   Float
+  visualStyle     String?
+  colorGrading    String?
+  motionStyle     String?
+  transitionStyle String?
+  paceNotes       String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  scenes          YoutubeScene[]
+
+  @@map("youtube_storyboards")
+}
+
+model YoutubeScene {
+  id              String             @id @default(cuid())
+  projectId       String
+  project         YoutubeProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  storyboardId    String?
+  storyboard      YoutubeStoryboard? @relation(fields: [storyboardId], references: [id])
+  sceneNumber     Int
+  type            String             @default("MAIN")
+  scriptText      String
+  visualPrompt    String
+  duration        Float
+  startTime       Float
+  cameraDirection String?
+  lightingNotes   String?
+  transition      String?
+  environment     String?
+  metaphorElement String?
+  emotionalBeat   String?
+  imageUrl        String?
+  videoUrl        String?
+  audioUrl        String?
+  status          String             @default("PENDING")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  assets          YoutubeAsset[]
+
+  @@map("youtube_scenes")
+}
+
+model YoutubeAsset {
+  id           String         @id @default(cuid())
+  projectId    String
+  project      YoutubeProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sceneId      String?
+  scene        YoutubeScene?  @relation(fields: [sceneId], references: [id])
+  type         String
+  url          String
+  prompt       String?
+  width        Int?
+  height       Int?
+  duration     Float?
+  fileSize     Int?
+  provider     String?
+  model        String?
+  qualityScore Float?
+  isApproved   Boolean        @default(true)
+  metadata     String?
+  createdAt    DateTime       @default(now())
+
+  @@map("youtube_assets")
+}
+
+model YoutubeSeo {
+  id               String         @id @default(cuid())
+  projectId        String         @unique
+  project          YoutubeProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title            String
+  description      String
+  tags             String
+  hashtags         String
+  chapters         String?
+  primaryKeyword   String?
+  keywordClusters  String?
+  ctrPrediction    Float?
+  searchVolume     String?
+  thumbnailConcept String?
+  thumbnailText    String?
+  thumbnailEmotion String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@map("youtube_seo")
+}
+
+model YoutubeMemory {
+  id          String         @id @default(cuid())
+  channelId   String
+  channel     YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  type        String
+  key         String
+  value       String
+  confidence  Float          @default(0.5)
+  usageCount  Int            @default(0)
+  successRate Float?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([channelId, type])
+  @@map("youtube_memories")
+}
+
+model YoutubeAnalytics {
+  id               String          @id @default(cuid())
+  channelId        String
+  channel          YoutubeChannel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  projectId        String?
+  project          YoutubeProject? @relation(fields: [projectId], references: [id])
+  ytVideoId        String?
+  views            Int             @default(0)
+  watchTimeMinutes Float           @default(0)
+  avgViewDuration  Float           @default(0)
+  avgViewPercent   Float           @default(0)
+  likes            Int             @default(0)
+  comments         Int             @default(0)
+  shares           Int             @default(0)
+  ctr              Float           @default(0)
+  impressions      Int             @default(0)
+  subscribersGained Int            @default(0)
+  retentionCurve   String?
+  dropOffPoints    String?
+  recordedAt       DateTime        @default(now())
+
+  @@map("youtube_analytics")
+}
+
+model YoutubeAgentLog {
+  id          String         @id @default(cuid())
+  projectId   String
+  project     YoutubeProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentName   String
+  stageName   String
+  status      String
+  input       String?
+  output      String?
+  error       String?
+  duration    Int?
+  retryCount  Int            @default(0)
+  startedAt   DateTime       @default(now())
+  completedAt DateTime?
+
+  @@map("youtube_agent_logs")
+}
+
+model YoutubeAutomationTask {
+  id                       String         @id @default(cuid())
+  channelId                String
+  channel                  YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  isActive                 Boolean        @default(true)
+  frequency                String         @default("WEEKLY")
+  scheduleTime             String?
+  daysOfWeek               String?
+  autoPublish              Boolean        @default(false)
+  requireApproval          Boolean        @default(true)
+  enableTrendResearch      Boolean        @default(true)
+  enableCompetitorAnalysis Boolean        @default(false)
+  enableAutoSEO            Boolean        @default(true)
+  videosPerRun             Int            @default(1)
+  lastRun                  DateTime?
+  nextRun                  DateTime?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+
+  @@map("youtube_automation_tasks")
+}

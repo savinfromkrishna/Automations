@@ -8,6 +8,8 @@ export interface ImageResult {
   model: string;
   provider: string;
   attemptedKeys: number;
+  tokenUsed?: string; // masked for logging
+  exhaustedKeys?: string[]; // masked list of tokens that hit credit limit
 }
 
 export interface VideoResult {
@@ -17,6 +19,19 @@ export interface VideoResult {
   model: string;
   provider: string;
   attemptedKeys: number;
+  tokenUsed?: string;
+  exhaustedKeys?: string[];
+}
+
+export interface TtsResult {
+  url: string;
+  contentType: string;
+  bytes: number;
+  model: string;
+  provider: string;
+  chars: number;
+  tokenUsed?: string;
+  exhaustedKeys?: string[];
 }
 
 // Providers we'll auto-try if "auto" routing fails. Order matters — cheapest/most reliable first.
@@ -46,9 +61,14 @@ async function blobToDataUrl(blob: Blob): Promise<{ url: string; contentType: st
   };
 }
 
+function maskKey(key: string): string {
+  if (!key || key.length < 12) return "***";
+  return `${key.substring(0, 6)}…${key.substring(key.length - 4)}`;
+}
+
 function isCreditExhausted(err: any): boolean {
   const msg = String(err?.message || err || "").toLowerCase();
-  return msg.includes("depleted") || msg.includes("out of credits") || msg.includes("purchase pre-paid") || msg.includes("subscribe to pro");
+  return msg.includes("depleted") || msg.includes("out of credits") || msg.includes("purchase pre-paid") || msg.includes("subscribe to pro") || msg.includes("payment required") || msg.includes("402");
 }
 
 function isRetryable(err: any): boolean {
@@ -65,6 +85,10 @@ function buildKeyPool(tokenOverride: string | undefined, poolKeys: string[]): st
   if (!tokenOverride) return poolKeys;
   return [tokenOverride, ...poolKeys.filter((k) => k !== tokenOverride)];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMAGE GENERATION
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function generateImage(
   prompt: string,
@@ -89,6 +113,7 @@ export async function generateImage(
     : ["auto", ...PROVIDER_FALLBACKS];
 
   const errors: string[] = [];
+  const exhausted = new Set<string>(); // tokens that hit credit limit this call
 
   // Walk the model fallback chain
   let currentModel: string | undefined = model;
@@ -98,7 +123,12 @@ export async function generateImage(
     triedModels.push(currentModel);
 
     for (const provider of providerOrder) {
+      // If all our keys are exhausted globally, no point continuing
+      if (exhausted.size >= triedKeys.length) break;
+
       for (const apiKey of triedKeys) {
+        if (exhausted.has(apiKey)) continue;
+
         try {
           const client = new InferenceClient(apiKey);
           const blob = await client.textToImage({
@@ -108,12 +138,29 @@ export async function generateImage(
             provider: provider === "auto" ? undefined : (provider as any),
           }, { outputType: "blob" });
           const data = await blobToDataUrl(blob);
-          return { ...data, model: currentModel, provider: provider === "auto" ? "auto" : provider, attemptedKeys: triedKeys.indexOf(apiKey) + 1 };
+          return {
+            ...data,
+            model: currentModel,
+            provider: provider === "auto" ? "auto" : provider,
+            attemptedKeys: triedKeys.indexOf(apiKey) + 1,
+            tokenUsed: maskKey(apiKey),
+            exhaustedKeys: Array.from(exhausted).map(maskKey),
+          };
         } catch (e: any) {
           const msg = e?.message || String(e);
-          errors.push(`[${currentModel}] ${provider}: ${msg.slice(0, 200)}`);
-          if (isProviderRejection(e)) break; // this provider doesn't support this model — try next
-          if (!isRetryable(e)) break;        // hard error — try next provider
+          errors.push(`[${currentModel}] ${provider} (${maskKey(apiKey)}): ${msg.slice(0, 160)}`);
+
+          // Credit exhausted? skip this key for the rest of this call
+          if (isCreditExhausted(e)) {
+            exhausted.add(apiKey);
+            continue; // try next key with same provider
+          }
+          // Provider doesn't support this model — try next provider
+          if (isProviderRejection(e)) break;
+          // Rate-limited or transient — try next key (might be that key's limit)
+          if (isRetryable(e)) continue;
+          // Unknown error — also try next key (don't give up after one bad request)
+          continue;
         }
       }
     }
@@ -121,13 +168,18 @@ export async function generateImage(
     currentModel = IMAGE_FALLBACK_CHAIN[currentModel];
   }
 
+  const exhaustedList = Array.from(exhausted).map(maskKey);
   throw new Error(
-    `Image generation failed. Models tried: ${triedModels.join(" → ")}. ` +
-    `Errors: ${errors.slice(-6).join(" || ")}`
+    `IMAGE_FAILED: Models tried: ${triedModels.join(" → ")}. ` +
+    (exhaustedList.length ? `Exhausted tokens: ${exhaustedList.join(", ")}. ` : "") +
+    `Last errors: ${errors.slice(-3).join(" || ")}`
   );
 }
 
-// Models that are image-to-video only (cannot do text-to-video)
+// ─────────────────────────────────────────────────────────────────────────────
+// VIDEO GENERATION
+// ─────────────────────────────────────────────────────────────────────────────
+
 const IMAGE_TO_VIDEO_MODELS = new Set([
   "Lightricks/LTX-Video",
   "stabilityai/stable-video-diffusion-img2vid-xt",
@@ -140,7 +192,6 @@ function isImageToVideoModel(model: string): boolean {
   return lower.includes("img2vid") || lower.includes("i2v") || lower.includes("image-to-video");
 }
 
-// Providers that actually support video tasks
 const VIDEO_PROVIDERS: Provider[] = ["fal-ai", "replicate", "novita"];
 
 async function tryGenerateVideo(
@@ -151,10 +202,15 @@ async function tryGenerateVideo(
   params: any,
   triedKeys: string[],
   providerOrder: Provider[],
-  allErrors: string[]
+  allErrors: string[],
+  exhausted: Set<string>
 ): Promise<VideoResult | null> {
   for (const provider of providerOrder) {
+    if (exhausted.size >= triedKeys.length) break;
+
     for (const apiKey of triedKeys) {
+      if (exhausted.has(apiKey)) continue;
+
       try {
         const client = new InferenceClient(apiKey);
         let blob: Blob;
@@ -174,13 +230,26 @@ async function tryGenerateVideo(
           });
         }
         const data = await blobToDataUrl(blob);
-        return { ...data, model, provider: provider === "auto" ? "auto" : provider, attemptedKeys: triedKeys.indexOf(apiKey) + 1 };
+        return {
+          ...data,
+          model,
+          provider: provider === "auto" ? "auto" : provider,
+          attemptedKeys: triedKeys.indexOf(apiKey) + 1,
+          tokenUsed: maskKey(apiKey),
+          exhaustedKeys: Array.from(exhausted).map(maskKey),
+        };
       } catch (e: any) {
         const msg = e?.message || String(e);
-        allErrors.push(`[${model}] ${provider}: ${msg.slice(0, 250)}`);
-        if (isCreditExhausted(e)) throw new Error("CREDITS_DEPLETED: Your Hugging Face monthly credits are exhausted. Go to huggingface.co/settings/billing to top up, or upgrade to PRO for 20× more usage.");
+        allErrors.push(`[${model}] ${provider} (${maskKey(apiKey)}): ${msg.slice(0, 200)}`);
+
+        // Credit exhausted? Skip this token for the rest of this call but KEEP TRYING others.
+        if (isCreditExhausted(e)) {
+          exhausted.add(apiKey);
+          continue;
+        }
         if (isProviderRejection(e)) break;
-        if (!isRetryable(e)) break;
+        if (isRetryable(e)) continue;
+        continue;
       }
     }
   }
@@ -215,7 +284,6 @@ export async function generateVideo(
     );
   }
 
-  // Convert image (data: URL or Blob) to a Blob for the SDK
   let imageBlob: Blob | undefined;
   if (image) {
     if (typeof image === "string") {
@@ -229,34 +297,55 @@ export async function generateVideo(
   }
 
   const allErrors: string[] = [];
+  const exhausted = new Set<string>();
 
   let currentModel: string | undefined = model;
   const triedModels: string[] = [];
   while (currentModel && !triedModels.includes(currentModel)) {
     triedModels.push(currentModel);
-    const result = await tryGenerateVideo(prompt, currentModel, imageBlob, useImageToVideo, params, triedKeys, providerOrder, allErrors);
+    const result = await tryGenerateVideo(prompt, currentModel, imageBlob, useImageToVideo, params, triedKeys, providerOrder, allErrors, exhausted);
     if (result) return result;
     currentModel = VIDEO_FALLBACK_CHAIN[currentModel];
   }
 
+  const exhaustedList = Array.from(exhausted).map(maskKey);
   throw new Error(
-    `Video generation failed. Models tried: ${triedModels.join(" → ")}. Providers tried: ${providerOrder.join(", ")}.` +
-    `\n\nTo fix: go to huggingface.co/settings/inference-providers and enable fal-ai (most reliable for video).` +
-    `\n\nAll errors:\n${allErrors.join("\n")}`
+    `VIDEO_FAILED: Models: ${triedModels.join(" → ")}. Providers: ${providerOrder.join(", ")}.` +
+    (exhaustedList.length ? `\nExhausted tokens: ${exhaustedList.join(", ")} (skipped).` : "") +
+    `\nTip: enable fal-ai at huggingface.co/settings/inference-providers for video.` +
+    `\nLast errors:\n${allErrors.slice(-5).join("\n")}`
   );
 }
 
-export async function generateTts(text: string, model: string): Promise<{ url: string; contentType: string; bytes: number; model: string; provider: string; chars: number }> {
-  const keys = await listValidHfKeys();
-  if (keys.length === 0) throw new Error("NO_TOKEN: Add a Hugging Face token in Settings.");
+// ─────────────────────────────────────────────────────────────────────────────
+// TEXT-TO-SPEECH
+// ─────────────────────────────────────────────────────────────────────────────
 
-  const triedKeys = rotatePool(keys);
+export async function generateTts(
+  text: string,
+  model: string,
+  opts: { hfToken?: string } = {}
+): Promise<TtsResult> {
+  const { hfToken: tokenOverride } = opts;
+  const poolKeys = await listValidHfKeys();
+  const allKeys = buildKeyPool(tokenOverride?.trim(), poolKeys);
+  if (allKeys.length === 0) throw new Error("NO_TOKEN: Add a Hugging Face token in Settings.");
+
+  const triedKeys = rotatePool(allKeys);
   const envProvider = (process.env.HF_PROVIDER || "").trim() as Provider;
-  const providerOrder: Provider[] = envProvider ? [envProvider, "auto", ...PROVIDER_FALLBACKS.filter((p) => p !== envProvider)] : ["auto", "hf-inference", "fal-ai", "replicate"];
+  const providerOrder: Provider[] = envProvider
+    ? [envProvider, "auto", ...PROVIDER_FALLBACKS.filter((p) => p !== envProvider)]
+    : ["auto", "hf-inference", "fal-ai", "replicate"];
 
   const errors: string[] = [];
+  const exhausted = new Set<string>();
+
   for (const provider of providerOrder) {
+    if (exhausted.size >= triedKeys.length) break;
+
     for (const apiKey of triedKeys) {
+      if (exhausted.has(apiKey)) continue;
+
       try {
         const client = new InferenceClient(apiKey);
         const blob = await client.textToSpeech({
@@ -265,15 +354,33 @@ export async function generateTts(text: string, model: string): Promise<{ url: s
           provider: provider === "auto" ? undefined : (provider as any),
         });
         const data = await blobToDataUrl(blob);
-        return { ...data, model, provider: provider === "auto" ? "auto" : provider, chars: text.length };
+        return {
+          ...data,
+          model,
+          provider: provider === "auto" ? "auto" : provider,
+          chars: text.length,
+          tokenUsed: maskKey(apiKey),
+          exhaustedKeys: Array.from(exhausted).map(maskKey),
+        };
       } catch (e: any) {
         const msg = e?.message || String(e);
-        errors.push(`${provider}: ${msg.slice(0, 200)}`);
+        errors.push(`${provider} (${maskKey(apiKey)}): ${msg.slice(0, 160)}`);
+
+        if (isCreditExhausted(e)) {
+          exhausted.add(apiKey);
+          continue;
+        }
         if (isProviderRejection(e)) break;
-        if (!isRetryable(e)) break;
+        if (isRetryable(e)) continue;
+        continue;
       }
     }
   }
 
-  throw new Error(`TTS failed for ${model}. Tried: ${providerOrder.join(", ")}. Errors: ${errors.slice(-5).join(" || ")}`);
+  const exhaustedList = Array.from(exhausted).map(maskKey);
+  throw new Error(
+    `TTS_FAILED: Model ${model}. Providers: ${providerOrder.join(", ")}.` +
+    (exhaustedList.length ? ` Exhausted: ${exhaustedList.join(", ")}.` : "") +
+    ` Errors: ${errors.slice(-3).join(" || ")}`
+  );
 }

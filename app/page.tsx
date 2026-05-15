@@ -46,6 +46,7 @@ import {
   Radio,
   Activity,
   Github,
+  Youtube,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateAutomatedContent, regenerateSection, refineContent } from '@/services/geminiService';
@@ -558,6 +559,11 @@ function TopNav({ appMode, setAppMode, hasApiKey, onSettings }: { appMode: strin
             <NavLink active={appMode === 'automation'} onClick={() => setAppMode('automation')} icon={<Zap className="w-3.5 h-3.5" />}>Automations</NavLink>
             <NavLink active={appMode === 'teams'} onClick={() => setAppMode('teams')} icon={<Users className="w-3.5 h-3.5" />}>Teams</NavLink>
             <NavLink active={appMode === 'history'} onClick={() => setAppMode('history')} icon={<BookOpen className="w-3.5 h-3.5" />}>Archive</NavLink>
+            <a href="/youtube" className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all text-[color:var(--color-fg-2)] hover:text-white hover:bg-[color:var(--color-bg-2)]/60">
+              <Youtube className="w-3.5 h-3.5 text-red-400" />
+              YouTube
+              <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider" style={{ background: 'linear-gradient(135deg, rgba(239,68,68,0.2), rgba(234,75,113,0.2))', color: '#fca5a5' }}>New</span>
+            </a>
             <NavLink active={appMode === 'settings'} onClick={onSettings} icon={<Settings className="w-3.5 h-3.5" />}>Settings</NavLink>
           </nav>
         </div>
