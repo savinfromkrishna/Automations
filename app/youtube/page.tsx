@@ -696,6 +696,14 @@ function ProjectCard({ project, onRun, onDelete, onSelect, actionLoading, compac
                   <WorkflowIcon size={12} />
                 </button>
               )}
+              <a
+                href={`/youtube/projects/${project.id}/editor`}
+                onClick={(e) => e.stopPropagation()}
+                title="Open in video editor"
+                className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 transition-colors inline-flex items-center"
+              >
+                <Film size={12} />
+              </a>
               {project.status === "FAILED" && (
                 <button onClick={() => onRun(project.id)} disabled={actionLoading === `run-${project.id}`}
                   className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors">

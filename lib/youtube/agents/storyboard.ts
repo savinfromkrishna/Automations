@@ -1,5 +1,5 @@
-import { ytLLMJson, YT_MODELS } from "../synthesize";
-import type { GeneratedStoryboard, StoryboardScene, GeneratedScript, MetaphorMap, PipelineContext } from "../types";
+import { ytLLMJson, YT_MODELS, YT_TOKEN_BUDGET } from "../synthesize";
+import type { GeneratedStoryboard, GeneratedScript, MetaphorMap, PipelineContext } from "../types";
 
 export async function runStoryboardAgent(
   ctx: PipelineContext,
@@ -8,71 +8,48 @@ export async function runStoryboardAgent(
 ): Promise<GeneratedStoryboard> {
   const scenesTarget = Math.max(8, Math.min(20, Math.round(script.estimatedDuration / 30)));
 
-  const sectionsJson = JSON.stringify(script.sections.map(s => ({
-    id: s.sectionId,
-    type: s.type,
-    narration: s.narration.substring(0, 200),
-    duration: s.duration,
-    startTime: s.startTime,
-    emotionalBeat: s.emotionalBeat,
-    visualNote: s.visualNote,
-  })));
+  // Compress sections: just narration first sentence + duration + emotion
+  // (full narration isn't needed — storyboard only needs gist + timing)
+  const sectionsCompact = script.sections.map(s => ({
+    t: s.type,
+    n: s.narration.substring(0, 120),
+    d: s.duration,
+    s: s.startTime,
+    e: s.emotionalBeat,
+  }));
 
-  const prompt = `You are the Cinematography Director and Storyboard Supervisor at a cinematic YouTube production studio.
+  const recurringStr = metaphors.recurringElements.slice(0, 4)
+    .map(e => `${e.symbol}: ${e.visualRepresentation}`).join(" | ");
 
-Transform this script into a complete visual production plan. Every scene must be cinematically rich, emotionally precise, and practically achievable with AI image/video generation.
+  const prompt = `Cinematography Director. Convert script into ${scenesTarget} cinematic scenes for AI image generation.
 
-VISUAL WORLD:
-- Central Metaphor: ${metaphors.centralMetaphor}
+Visual world:
+- Central metaphor: ${metaphors.centralMetaphor}
 - Environment: ${metaphors.emotionalEnvironment}
-- Color Psychology: ${metaphors.colorPsychology}
-- Lighting Mood: ${metaphors.lightingMood}
-- Visual Style: ${ctx.visualStyle || "cinematic, highly stylized, 4K"}
-- Narrative Archetype: ${metaphors.narrativeArchetype}
+- Color: ${metaphors.colorPsychology}
+- Lighting: ${metaphors.lightingMood}
+- Style: ${ctx.visualStyle || "cinematic 4K"}
+- Recurring: ${recurringStr}
 
-RECURRING VISUAL ELEMENTS:
-${metaphors.recurringElements.map(e => `- ${e.symbol}: ${e.visualRepresentation}`).join("\n")}
+Script sections (compact):
+${JSON.stringify(sectionsCompact)}
 
-SCRIPT SECTIONS TO VISUALIZE:
-${sectionsJson}
+Rules: 20-45s/scene, hyper-specific visual prompts, exact camera moves, emotion-loaded environments, integrated metaphors.
 
-SCENE CREATION RULES:
-- Each scene should be 20-45 seconds
-- Write visual prompts as if directing an AI artist — be hyper-specific
-- Include exact camera movements (slow push-in, wide establishing, extreme close-up, etc.)
-- Every environment should feel emotionally loaded
-- Use lighting to carry emotion (golden-hour warmth, cold blue shadows, single-source candle, etc.)
-- Include the metaphor elements naturally
-- Create seamless emotional flow between scenes
-
-Target: ${scenesTarget} scenes covering the full ${Math.round(script.estimatedDuration / 60)} minute video.
-
-Return this JSON:
+Return JSON:
 {
   "totalScenes": ${scenesTarget},
   "totalDuration": ${script.estimatedDuration},
-  "visualStyle": "one-sentence description of the overall visual aesthetic",
-  "colorGrading": "specific color grade description (e.g., 'desaturated blues with warm amber highlights')",
-  "motionStyle": "description of camera movement philosophy",
-  "transitionStyle": "primary transition style between scenes",
-  "paceNotes": "overall pacing guidance for the editor",
-  "scenes": [
-    {
-      "sceneNumber": 1,
-      "type": "HOOK",
-      "scriptText": "exact narration words for this scene",
-      "visualPrompt": "ultra-detailed AI image generation prompt — describe the exact image: subject, environment, lighting, mood, style, camera angle, depth of field, color grade — minimum 50 words",
-      "duration": 15,
-      "startTime": 0,
-      "cameraDirection": "specific camera movement and angle",
-      "lightingNotes": "precise lighting setup description",
-      "transition": "transition type to next scene",
-      "environment": "the location/world of this scene",
-      "metaphorElement": "which symbolic element appears here",
-      "emotionalBeat": "what the viewer feels"
-    }
-  ]
+  "visualStyle": "one-sentence aesthetic",
+  "colorGrading": "specific grade",
+  "motionStyle": "camera philosophy",
+  "transitionStyle": "primary transition",
+  "paceNotes": "editor guidance",
+  "scenes": [{"sceneNumber":1,"type":"HOOK","scriptText":"exact narration","visualPrompt":"50+ word ultra-detailed prompt: subject, environment, lighting, mood, style, angle, DOF, color grade","duration":15,"startTime":0,"cameraDirection":"","lightingNotes":"","transition":"","environment":"","metaphorElement":"","emotionalBeat":""}]
 }`;
 
-  return ytLLMJson<GeneratedStoryboard>(prompt, YT_MODELS.SCRIPT);
+  return ytLLMJson<GeneratedStoryboard>(prompt, YT_MODELS.SCRIPT, {
+    maxTokens: YT_TOKEN_BUDGET.STORYBOARD,
+    temperature: 0.8,
+  });
 }

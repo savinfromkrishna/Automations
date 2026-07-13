@@ -569,7 +569,9 @@ export async function runYoutubeProjectPipeline(projectId: string, opts: { start
       try {
         await executeStage(projectId, stage, async () => {
           const thumbPrompt = `${state.seo!.thumbnailConcept}, ${state.seo!.thumbnailEmotion} expression, YouTube thumbnail style, high contrast, bold composition, 4K, professional photography`;
-          const thumbResult = await generateImage(thumbPrompt, "black-forest-labs/FLUX.1-dev", { width: 1280, height: 720 });
+          // Schnell first — cheap + fast. media.ts fallback chain promotes to
+          // dev/SDXL automatically if schnell is unavailable.
+          const thumbResult = await generateImage(thumbPrompt, "black-forest-labs/FLUX.1-schnell", { width: 1280, height: 720 });
           await prisma.youtubeAsset.create({
             data: {
               projectId, type: "THUMBNAIL", url: thumbResult.url, prompt: thumbPrompt,

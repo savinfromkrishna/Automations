@@ -1,5 +1,6 @@
 import { InferenceClient } from "@huggingface/inference";
 import { listValidHfKeys, rotatePool } from "./synthesize";
+import { markTokenExhausted } from "./token-health";
 
 export interface ImageResult {
   url: string;
@@ -38,12 +39,16 @@ export interface TtsResult {
 const PROVIDER_FALLBACKS = ["fal-ai", "replicate", "novita", "together", "nebius", "hyperbolic", "hf-inference"] as const;
 type Provider = (typeof PROVIDER_FALLBACKS)[number] | "auto";
 
-// Image model fallback chain — if a model fails all providers, retry with the next
+// Image model fallback chain — schnell first (4-step, ~4-6× cheaper),
+// dev is the fallback for high-quality cases (1 thumbnail per video).
 const IMAGE_FALLBACK_CHAIN: Record<string, string> = {
-  "black-forest-labs/FLUX.1-dev":              "black-forest-labs/FLUX.1-schnell",
   "black-forest-labs/FLUX.1-schnell":          "stabilityai/stable-diffusion-xl-base-1.0",
+  "black-forest-labs/FLUX.1-dev":              "black-forest-labs/FLUX.1-schnell",
   "stabilityai/stable-diffusion-xl-base-1.0":  "runwayml/stable-diffusion-v1-5",
 };
+
+// Default image model when caller doesn't specify (cheap, fast, good quality).
+export const DEFAULT_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell";
 
 // If a video model fails all providers, automatically retry with the next model in the chain
 const VIDEO_FALLBACK_CHAIN: Record<string, string> = {
@@ -90,15 +95,87 @@ function buildKeyPool(tokenOverride: string | undefined, poolKeys: string[]): st
 // IMAGE GENERATION
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Map our HF model IDs to Pollinations.ai model names.
+// Pollinations.ai serves these models for FREE with no API key, no signup, no credits.
+// Open-source backend (Flux, SDXL via flux-schnell turbo variant).
+const POLLINATIONS_MODEL_MAP: Record<string, string> = {
+  "black-forest-labs/FLUX.1-dev":             "flux",
+  "black-forest-labs/FLUX.1-schnell":         "turbo",
+  "stabilityai/stable-diffusion-xl-base-1.0": "flux",
+  "runwayml/stable-diffusion-v1-5":           "flux",
+};
+
+function toPollinationsModel(hfModel: string): string {
+  return POLLINATIONS_MODEL_MAP[hfModel] ?? "flux";
+}
+
+async function tryPollinations(
+  prompt: string,
+  model: string,
+  width: number,
+  height: number
+): Promise<ImageResult | null> {
+  try {
+    const pollModel = toPollinationsModel(model);
+    const seed = Math.floor(Math.random() * 1_000_000);
+    const url =
+      `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}` +
+      `?width=${width}&height=${height}&model=${pollModel}&nologo=true&enhance=true&seed=${seed}`;
+
+    const resp = await fetch(url, { method: "GET" });
+    if (!resp.ok) {
+      console.warn(`[Pollinations] HTTP ${resp.status}: ${(await resp.text()).slice(0, 120)}`);
+      return null;
+    }
+    const ct = resp.headers.get("content-type") || "image/jpeg";
+    if (!ct.startsWith("image/")) {
+      console.warn(`[Pollinations] Non-image content-type: ${ct}`);
+      return null;
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.byteLength < 1024) {
+      console.warn(`[Pollinations] Suspiciously small payload: ${buf.byteLength} bytes`);
+      return null;
+    }
+    return {
+      url: `data:${ct};base64,${buf.toString("base64")}`,
+      contentType: ct,
+      bytes: buf.byteLength,
+      model: `pollinations/${pollModel}`,
+      provider: "pollinations",
+      attemptedKeys: 0,
+      tokenUsed: "keyless",
+      exhaustedKeys: [],
+    };
+  } catch (e: any) {
+    console.warn(`[Pollinations] Request failed: ${String(e?.message || e).slice(0, 160)}`);
+    return null;
+  }
+}
+
 export async function generateImage(
   prompt: string,
   model: string,
   opts: { width?: number; height?: number; steps?: number; guidance?: number; hfToken?: string } = {}
 ): Promise<ImageResult> {
   const { hfToken: tokenOverride, ...imgOpts } = opts;
+
+  // ── 1. Try Pollinations.ai first (free, keyless, open-source Flux backend) ──
+  const width = imgOpts.width ?? 1024;
+  const height = imgOpts.height ?? 1024;
+  const polled = await tryPollinations(prompt, model, width, height);
+  if (polled) return polled;
+  console.warn("[Image] Pollinations failed — falling back to HF Inference Providers.");
+
+  // ── 2. Fall back to HF Inference Providers ─────────────────────────────────
   const poolKeys = await listValidHfKeys();
   const allKeys = buildKeyPool(tokenOverride?.trim(), poolKeys);
-  if (allKeys.length === 0) throw new Error("NO_TOKEN: Add a Hugging Face token in Settings.");
+  if (allKeys.length === 0) {
+    throw new Error(
+      "IMAGE_FAILED: Pollinations.ai unreachable and no Hugging Face token configured. " +
+      "Add an HF token in Settings, or check your network connection to image.pollinations.ai."
+    );
+  }
 
   const params: any = {};
   if (imgOpts.width) params.width = imgOpts.width;
@@ -150,9 +227,11 @@ export async function generateImage(
           const msg = e?.message || String(e);
           errors.push(`[${currentModel}] ${provider} (${maskKey(apiKey)}): ${msg.slice(0, 160)}`);
 
-          // Credit exhausted? skip this key for the rest of this call
+          // Credit exhausted? skip this key for the rest of this call AND
+          // mark it in persistent storage so future calls skip it for 24h.
           if (isCreditExhausted(e)) {
             exhausted.add(apiKey);
+            markTokenExhausted(apiKey, msg.slice(0, 160)).catch(() => {});
             continue; // try next key with same provider
           }
           // Provider doesn't support this model — try next provider
@@ -170,7 +249,8 @@ export async function generateImage(
 
   const exhaustedList = Array.from(exhausted).map(maskKey);
   throw new Error(
-    `IMAGE_FAILED: Models tried: ${triedModels.join(" → ")}. ` +
+    `IMAGE_FAILED: Pollinations.ai unreachable AND all HF providers failed. ` +
+    `Models tried: ${triedModels.join(" → ")}. ` +
     (exhaustedList.length ? `Exhausted tokens: ${exhaustedList.join(", ")}. ` : "") +
     `Last errors: ${errors.slice(-3).join(" || ")}`
   );
@@ -242,9 +322,11 @@ async function tryGenerateVideo(
         const msg = e?.message || String(e);
         allErrors.push(`[${model}] ${provider} (${maskKey(apiKey)}): ${msg.slice(0, 200)}`);
 
-        // Credit exhausted? Skip this token for the rest of this call but KEEP TRYING others.
+        // Credit exhausted? Skip this token for the rest of this call AND
+        // persist the cooldown for 24h.
         if (isCreditExhausted(e)) {
           exhausted.add(apiKey);
+          markTokenExhausted(apiKey, msg.slice(0, 160)).catch(() => {});
           continue;
         }
         if (isProviderRejection(e)) break;
@@ -368,6 +450,7 @@ export async function generateTts(
 
         if (isCreditExhausted(e)) {
           exhausted.add(apiKey);
+          markTokenExhausted(apiKey, msg.slice(0, 160)).catch(() => {});
           continue;
         }
         if (isProviderRejection(e)) break;

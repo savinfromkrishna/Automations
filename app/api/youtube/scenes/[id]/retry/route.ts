@@ -24,7 +24,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     prompt += ", cinematic photography, 8K ultra-detailed, dramatic lighting, film grain, anamorphic lens, shallow depth of field, highly detailed textures";
 
     try {
-      const result = await generateImage(prompt, "black-forest-labs/FLUX.1-dev", {
+      const result = await generateImage(prompt, "black-forest-labs/FLUX.1-schnell", {
         width: 1920,
         height: 1080,
         hfToken: preferredToken,

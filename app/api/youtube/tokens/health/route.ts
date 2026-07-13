@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { InferenceClient } from "@huggingface/inference";
-import { listValidHfKeys } from "../../../../../lib/synthesize";
+import { listAllHfKeysIncludingExhausted } from "../../../../../lib/synthesize";
+import { getTokenHealthReport, markTokenHealthy } from "../../../../../lib/token-health";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -15,6 +16,11 @@ interface TokenHealth {
   videoProvidersEnabled: string[];
   errors: { llm?: string; image?: string; tts?: string };
   durationMs: number;
+  cooldown?: {              // present only if this token is in a credit-cooldown window
+    exhaustedUntil: string;
+    lastError?: string;
+    failureCount: number;
+  };
 }
 
 function mask(k: string): string {
@@ -109,25 +115,58 @@ async function testToken(rawKey: string): Promise<TokenHealth> {
   return result;
 }
 
+function tokenFingerprint(token: string): string {
+  const t = token.trim();
+  if (t.length < 12) return `short:${t.length}`;
+  return `${t.slice(0, 6)}_${t.slice(-4)}_${t.length}`;
+}
+
 export async function GET() {
   try {
-    const keys = await listValidHfKeys();
+    // Use the unfiltered list so users see EVERY token, including ones currently
+    // in credit cooldown — otherwise exhausted keys would silently disappear.
+    const keys = await listAllHfKeysIncludingExhausted();
     if (keys.length === 0) {
       return NextResponse.json({ tokens: [], total: 0, healthy: 0, message: "No HF tokens configured. Add them in Settings → Token Pool." });
     }
 
+    const cooldownRecords = await getTokenHealthReport();
+    const cooldownById = new Map(cooldownRecords.map(r => [r.id, r]));
+
     // Test all tokens in parallel
     const results = await Promise.all(keys.map(testToken));
+
+    // Annotate with cooldown state + auto-restore tokens whose tests passed
+    for (let i = 0; i < results.length; i++) {
+      const raw = results[i].raw;
+      const id = tokenFingerprint(raw);
+      const cd = cooldownById.get(id);
+      if (cd) {
+        results[i].cooldown = {
+          exhaustedUntil: cd.exhaustedUntil,
+          lastError: cd.lastError,
+          failureCount: cd.failureCount,
+        };
+        // If the token now passes a real LLM/image/TTS test, clear its cooldown
+        // — credits may have refreshed.
+        if (results[i].llmOk || results[i].imageOk || results[i].ttsOk) {
+          await markTokenHealthy(raw).catch(() => {});
+          delete results[i].cooldown;
+        }
+      }
+    }
 
     // Strip raw keys from response (only used internally)
     const sanitized = results.map(({ raw, ...rest }) => rest);
 
-    const healthy = sanitized.filter(r => r.llmOk || r.imageOk || r.ttsOk).length;
+    const healthy = sanitized.filter(r => (r.llmOk || r.imageOk || r.ttsOk) && !r.cooldown).length;
+    const inCooldown = sanitized.filter(r => r.cooldown).length;
 
     return NextResponse.json({
       tokens: sanitized,
       total: keys.length,
       healthy,
+      inCooldown,
       summary: {
         llm: sanitized.filter(r => r.llmOk).length,
         image: sanitized.filter(r => r.imageOk).length,

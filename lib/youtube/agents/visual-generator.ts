@@ -2,7 +2,10 @@ import { generateImage } from "../../media";
 import { prisma } from "../../prisma";
 import { TokenAllocator } from "../token-allocator";
 
-const IMAGE_MODEL = "black-forest-labs/FLUX.1-dev";
+// FLUX.1-schnell is ~4-6× cheaper than FLUX.1-dev (4 steps vs 28) with
+// quality that's excellent for YouTube scene visuals. The internal fallback
+// chain in media.ts handles cases where schnell is unavailable.
+const IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell";
 
 export interface VisualGenerationResult {
   sceneId: string;
@@ -19,7 +22,7 @@ export interface VisualGenerationResult {
 export async function runVisualGeneratorAgent(
   projectId: string,
   scenes: Array<{ id: string; sceneNumber: number; visualPrompt: string; environment?: string | null; metaphorElement?: string | null }>
-): Promise<{ results: VisualGenerationResult[]; failures: VisualGenerationResult[]; tokensUsed: string[]; tokensExhausted: string[] }> {
+): Promise<{ results: VisualGenerationResult[]; failures: VisualGenerationResult[]; tokensUsed: string[]; tokensExhausted: string[]; totalScenes: number; successCount: number; failureCount: number }> {
   const allocator = await TokenAllocator.create();
   const results: VisualGenerationResult[] = [];
   const failures: VisualGenerationResult[] = [];
@@ -107,12 +110,8 @@ export async function runVisualGeneratorAgent(
   // Return a log-friendly summary (without huge data: URLs — those live in the scenes/assets tables)
   return {
     results: results.map(r => ({
-      sceneId: r.sceneId,
-      sceneNumber: r.sceneNumber,
+      ...r,
       imageUrl: r.imageUrl.startsWith("data:") ? `<data:${r.imageUrl.length} bytes>` : r.imageUrl,
-      provider: r.provider,
-      model: r.model,
-      tokenUsed: r.tokenUsed,
     })),
     failures,
     totalScenes: orderedScenes.length,

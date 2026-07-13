@@ -1,5 +1,4 @@
 import { prisma } from "../../prisma";
-import { ytLLMJson, YT_MODELS } from "../synthesize";
 import type { ChannelMemory, MemoryType, QualityReport, GeneratedScript, SeoPackage } from "../types";
 
 export async function retrieveChannelMemories(
@@ -35,7 +34,7 @@ export async function storeProjectLearnings(
   seo: SeoPackage,
   quality: QualityReport
 ): Promise<void> {
-  const learnings = await extractLearnings(script, seo, quality);
+  const learnings = extractLearnings(script, seo, quality);
 
   for (const learning of learnings) {
     const existing = await prisma.youtubeMemory.findFirst({
@@ -67,36 +66,83 @@ export async function storeProjectLearnings(
   }
 }
 
-async function extractLearnings(
+// Heuristic learning extraction — no LLM call needed. The inputs are already
+// structured data; we just summarize what worked for future projects.
+function extractLearnings(
   script: GeneratedScript,
   seo: SeoPackage,
   quality: QualityReport
-): Promise<ChannelMemory[]> {
-  const prompt = `Extract reusable learnings from this video production for future use.
+): ChannelMemory[] {
+  const out: ChannelMemory[] = [];
+  const confidenceFromScore = (s: number) => Math.max(0.4, Math.min(0.95, s / 100));
 
-Script hook: "${script.hook}"
-Hook type: ${script.hookType}
-Emotion score: ${script.emotionScore}
-Retention score: ${script.retentionScore}
-Quality overall: ${quality.overallScore}
-SEO title: "${seo.title}"
-CTR prediction: ${seo.ctrPrediction}%
-Thumbnail concept: "${seo.thumbnailConcept}"
+  // HOOK learning — only worth storing if the hook actually scored well
+  if (script.emotionScore >= 75) {
+    out.push({
+      type: "HOOK",
+      key: `${script.hookType}_emotion_${Math.round(script.emotionScore)}`,
+      value: `Hook type "${script.hookType}" with emotion ${script.emotionScore}/100: "${script.hook.slice(0, 200)}"`,
+      confidence: confidenceFromScore(script.emotionScore),
+      usageCount: 0,
+    });
+  }
 
-Extract 5-8 specific, reusable learnings. Return JSON:
-{
-  "learnings": [
-    {
-      "type": "HOOK|STYLE|METAPHOR|THUMBNAIL|PACING|SEO|VISUAL",
-      "key": "short descriptive key",
-      "value": "the specific learning — what worked and why",
-      "confidence": 0.7
-    }
-  ]
-}`;
+  // PACING — section structure that produced good retention
+  if (script.retentionScore >= 75 && script.sections.length > 0) {
+    out.push({
+      type: "PACING",
+      key: `sections_${script.sections.length}_retention_${Math.round(script.retentionScore)}`,
+      value: `${script.sections.length} sections, ${Math.round(script.estimatedDuration / 60)}min, retention ${script.retentionScore}/100. Tension points: ${script.tensionPoints.length}.`,
+      confidence: confidenceFromScore(script.retentionScore),
+      usageCount: 0,
+    });
+  }
 
-  const result = await ytLLMJson<{ learnings: ChannelMemory[] }>(prompt, YT_MODELS.QUALITY);
-  return result.learnings;
+  // SEO — successful title pattern
+  if (quality.seoStrength >= 70) {
+    out.push({
+      type: "SEO",
+      key: `title_${seo.title.length}chars_ctr_${Math.round(seo.ctrPrediction ?? 5)}`,
+      value: `Title "${seo.title}" (${seo.title.length} chars) predicted CTR ${seo.ctrPrediction}%. Primary: ${seo.primaryKeyword}.`,
+      confidence: confidenceFromScore(quality.seoStrength),
+      usageCount: 0,
+    });
+  }
+
+  // THUMBNAIL — if quality was approved, the concept is worth remembering
+  if (quality.approved && seo.thumbnailConcept) {
+    out.push({
+      type: "THUMBNAIL",
+      key: `${seo.thumbnailEmotion}_emotion`,
+      value: `${seo.thumbnailEmotion} thumbnails: ${seo.thumbnailConcept.slice(0, 240)}`,
+      confidence: confidenceFromScore(quality.overallScore),
+      usageCount: 0,
+    });
+  }
+
+  // STYLE — overall style fingerprint when the video scored well
+  if (quality.overallScore >= 80) {
+    out.push({
+      type: "STYLE",
+      key: `overall_${Math.round(quality.overallScore)}`,
+      value: `Approved style: emotion ${script.emotionScore}, retention ${script.retentionScore}, originality ${script.originalityScore}, SEO ${quality.seoStrength}.`,
+      confidence: confidenceFromScore(quality.overallScore),
+      usageCount: 0,
+    });
+  }
+
+  // VISUAL — only if visual coherence was strong
+  if (quality.visualCoherence >= 80) {
+    out.push({
+      type: "VISUAL",
+      key: `coherence_${Math.round(quality.visualCoherence)}`,
+      value: `Visual coherence ${quality.visualCoherence}/100 — pattern worked well.`,
+      confidence: confidenceFromScore(quality.visualCoherence),
+      usageCount: 0,
+    });
+  }
+
+  return out;
 }
 
 export async function getMemoriesForContext(channelId: string): Promise<string> {
